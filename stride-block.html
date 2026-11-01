@@ -423,19 +423,19 @@ function paceTxt(z, P) {
 function useAI(p) { return p.ai && p.aiOn !== false ? p.ai : null; }
 function settings(p) {
   const ai = useAI(p);
-  const start = mondayOf(parseISO(p.startDate)), raceDate = parseISO(p.raceDate), raceMon = mondayOf(raceDate);
-  const n = Math.round((raceMon - start) / WK) + 1;
+  const start = parseISO(p.startDate), raceDate = parseISO(p.raceDate);
+  const n = Math.floor(Math.round((raceDate - start) / 864e5) / 7) + 1;
   const gentle = !!(p.progression === 'gentle' || p.painNow === 'yes' || (ai && ai.progression === 'gentle'));
   const strengthPer = ai && ai.strengthPer != null ? Math.max(ai.strengthPer, +p.strengthPer || 0) : (+p.strengthPer || 0);
-  return { L: p.freq, full: p.distance === 'full', gentle, strengthPer, start, raceDate, raceMon, n,
+  return { L: p.freq, full: p.distance === 'full', gentle, strengthPer, start, raceDate, n,
     taper: p.distance === 'full' ? 3 : 2, cycle: p.freq === 'regular' ? 4 : 3, rec: REC_WEEKS[p.distance][p.freq] };
 }
 function planIssues(p) {
   const errs = [], warns = [];
-  if (!p.raceDate || !p.startDate) { errs.push('Pick your race date and a start week.'); return { errs, warns }; }
+  if (!p.raceDate || !p.startDate) { errs.push('Pick your race date and your first day of training.'); return { errs, warns }; }
   const s = settings(p);
-  if (s.n < 6) errs.push('Your race is less than 6 weeks after the start week. Pick a later race or an earlier start week.');
-  else if (s.n > 30) errs.push(`That's ${s.n} weeks away. Pick a start week within 30 weeks of the race (for example ${s.rec} weeks before).`);
+  if (s.n < 6) errs.push('Your race is less than 6 weeks after your first day. Pick a later race or an earlier first day.');
+  else if (s.n > 30) errs.push(`That's ${s.n} weeks away. Pick a first day within 30 weeks of the race (for example ${s.rec} weeks before).`);
   else if (s.n < s.rec) warns.push(`${s.n} weeks is shorter than the ${s.rec} weeks usually recommended for your first ${DIST[p.distance].label.toLowerCase()} from where you are now. The plan builds only as far as is safe, so your longest run may fall short of the usual peak.`);
   const rd = (p.runDays || []).length;
   if (rd < 2) errs.push('Pick at least 2 days you can run.');
@@ -510,7 +510,8 @@ function computeWeeks(p) {
     let long;
     if (i < m) { if (isCut) long = r05(prevLong * 0.75); else { long = r05(ls + inc * j); j++; prevLong = long; } }
     else long = phase === 'race' ? 0 : r05(peak * (s.full ? (i === m ? 0.65 : 0.4) : 0.6));
-    const w = { i, phase, cut: isCut, start: wstart, long, days: Array.from({ length: 7 }, (_, d) => ({ date: iso(addDays(wstart, d)), dow: d, items: [] })) };
+    const w = { i, phase, cut: isCut, start: wstart, long, days: Array.from({ length: 7 }, (_, k) => { const dt = addDays(wstart, k); return { date: iso(dt), dow: dowOf(dt), k, items: [] }; }) };
+    const D = dow => w.days.find(x => x.dow === dow);
     const bi = phase === 'base' ? i : phase === 'build' ? i - baseN : phase === 'peak' ? i - baseN - buildN : i - m;
     const bt = phase === 'base' ? bi / Math.max(1, baseN - 1) : phase === 'build' ? bi / Math.max(1, buildN - 1) : bi / Math.max(1, peakN - 1);
     const rw = !p.run30 && phase === 'base' ? { run: Math.round(2 + 6 * bt), walk: 1 } : null;
@@ -519,19 +520,19 @@ function computeWeeks(p) {
     if (phase === 'taper') easyKm = r05(Math.max(3, easyKm * (i === m ? 0.8 : 0.65)));
 
     if (phase === 'race') {
-      const raceDow = dowOf(s.raceDate);
-      const before = avail.filter(d => d < raceDow - 1);
+      const ri = w.days.findIndex(x => x.date === iso(s.raceDate));
+      const before = w.days.filter(x => x.k < ri - 1 && avail.includes(x.dow));
       const runs = before.length > 2 ? [before[0], before[Math.floor(before.length / 2)]] : before;
-      runs.forEach((d, x) => w.days[d].items.push({ type: 'easy', km: r05(Math.max(3, easyKm * 0.5)), strides: x === 0 ? 4 : 0 }));
-      if (raceDow - 1 >= 0 && avail.includes(raceDow - 1)) w.days[raceDow - 1].items.push({ type: 'shakeout', km: 2.5, strides: 4 });
-      w.days[raceDow].items.push({ type: 'race' });
-      w.raceDow = raceDow;
+      runs.forEach((x, j) => x.items.push({ type: 'easy', km: r05(Math.max(3, easyKm * 0.5)), strides: j === 0 ? 4 : 0 }));
+      if (ri >= 1 && avail.includes(w.days[ri - 1].dow)) w.days[ri - 1].items.push({ type: 'shakeout', km: 2.5, strides: 4 });
+      w.days[ri].items.push({ type: 'race' });
+      w.raceIdx = ri; w.raceDow = w.days[ri].dow;
     } else {
       const count = Math.min(avail.length, CAPS[s.L][phase]) - (isCut && Math.min(avail.length, CAPS[s.L][phase]) > 3 ? 1 : 0);
       const picks = pickDays(avail, longDay, count), others = picks.slice(1);
       const ranked = rankForQuality(others, longDay);
       const qd = ranked[0], md = s.full && ranked.length >= 3 && (phase === 'build' || phase === 'peak') && !isCut ? ranked[1] : null;
-      w.days[longDay].items.push({ type: 'long', km: long, rw });
+      D(longDay).items.push({ type: 'long', km: long, rw });
       for (const d of others) {
         let it = { type: 'easy', km: easyKm, rw };
         if (d === md) it = { type: 'easy', km: Math.min(16, r05(long * 0.55)), medium: true };
@@ -547,21 +548,21 @@ function computeWeeks(p) {
           const retest = p.retest && isCut && (phase === 'base' || phase === 'build') && (s.L === 'regular' || cutIdx % 2 === 0);
           if (retest || (p.testMode === 'plan' && i === 0)) it = { type: 'test' };
         }
-        w.days[d].items.push(it);
+        D(d).items.push(it);
       }
       if (isCut) cutIdx++;
       // cross-training
       crossDays.forEach((d, x) => {
         const act = acts[x % acts.length];
-        if (act === 'gym') return w.days[d].items.push({ type: 'strength', gym: true });
-        w.days[d].items.push({ type: 'cross', act, min: phase === 'taper' ? 30 : isCut ? 30 : phase === 'base' ? 35 : 45 });
+        if (act === 'gym') return D(d).items.push({ type: 'strength', gym: true });
+        D(d).items.push({ type: 'cross', act, min: phase === 'taper' ? 30 : isCut ? 30 : phase === 'base' ? 35 : 45 });
       });
       // strength: gym days count, the rest go after an easy run (not the day before the long run), else a cross day
       let need = phase === 'taper' ? Math.min(1, s.strengthPer) : s.strengthPer;
       need -= w.days.filter(dd => dd.items.some(it => it.type === 'strength')).length;
       const easyDays = rankForQuality(others.filter(d => d !== qd && fwd(d, longDay) !== 1), longDay);
-      const spots = [...easyDays, ...crossDays.filter(d => !w.days[d].items.some(it => it.type === 'strength')), ...others.filter(d => !easyDays.includes(d) && d !== qd)];
-      for (const d of spots) { if (need <= 0) break; w.days[d].items.push({ type: 'strength' }); need--; }
+      const spots = [...easyDays, ...crossDays.filter(d => !D(d).items.some(it => it.type === 'strength')), ...others.filter(d => !easyDays.includes(d) && d !== qd)];
+      for (const d of spots) { if (need <= 0) break; D(d).items.push({ type: 'strength' }); need--; }
       for (const dd of w.days) for (const it of dd.items) if (it.type === 'strength') it.rounds = phase === 'base' || phase === 'taper' ? 2 : 3;
     }
     weeks.push(w);
@@ -680,7 +681,7 @@ function describe(it, P, p) {
 const KEY = 'strideblock.v1';
 const S = { view: 'plan', week: 0, calMonth: null, calSel: null, step: 0, draft: null, profile: null, history: [], weeks: [], meta: {}, P: null, open: {}, sheet: null, sample: undefined, aiBusy: false, aiErr: '', aiCtl: null, delArm: null };
 function blankProfile() {
-  const mon = mondayOf(new Date());
+  const mon = parseISO(todayISO());
   return { example: false, planId: 'p' + Date.now(), raceName: '', raceDate: iso(addDays(mon, 7 * 15 + 6)), startDate: iso(mon),
     distance: 'half', goalType: 'finish', goalTime: '', why: '',
     unit: 'km', freq: 'some', run30: true, longest: 5, weekly: 10,
@@ -690,7 +691,7 @@ function blankProfile() {
     ai: null, aiOn: true, aiStale: false, swaps: [] };
 }
 function exampleProfile() {
-  const start = addDays(mondayOf(new Date()), -21);
+  const start = addDays(parseISO(todayISO()), -21);
   return { ...blankProfile(), example: true, planId: 'example', raceName: 'City Half Marathon', startDate: iso(start), raceDate: iso(addDays(start, 7 * 13 + 6)),
     freq: 'some', longest: 6, weekly: 12, injuries: ['shins'], runDays: [1, 3, 6], longDay: 6, crossDays: [4], crossActs: ['climb'],
     testMode: 'time', testDist: '5k', testTime: '31:30' };
@@ -708,8 +709,8 @@ function recompute(jump) {
   const r = computeWeeks(S.profile);
   S.weeks = r.weeks; S.meta = r.meta; S.P = r.P;
   if (jump !== false) {
-    const t = mondayOf(new Date());
-    S.week = clamp(Math.floor((t - mondayOf(parseISO(S.profile.startDate))) / WK), 0, S.weeks.length - 1);
+    const days = Math.round((parseISO(todayISO()) - parseISO(S.profile.startDate)) / 864e5);
+    S.week = clamp(Math.floor(days / 7), 0, S.weeks.length - 1);
   }
 }
 function seedExample() {
@@ -759,7 +760,7 @@ function dayHTML(d, w) {
   const dt = parseISO(d.date), today = d.date === todayISO();
   const head = `<div class="dow">${DOW[d.dow]}<small>${fmtD(dt)}</small></div>`;
   if (!d.items.length) {
-    const after = w && w.phase === 'race' && w.raceDow != null && d.dow > w.raceDow;
+    const after = w && w.phase === 'race' && w.raceIdx != null && d.k > w.raceIdx;
     return `<div class="rest-day">${head}<span>${after ? 'Recovery. Walk, stretch, celebrate.' : 'Rest'}</span>${w && w.phase !== 'race' ? `<button class="linkbtn" data-act="move" data-d="${d.date}" style="margin-left:auto">Move a day here</button>` : ''}</div>`;
   }
   const P = S.P, p = S.profile, main = d.items[0];
@@ -963,10 +964,10 @@ function viewSetup() {
     const r = computeWeeks(d), s = settings(d);
     body = `<div class="field"><label for="f-raceName">Race name (optional)</label><input type="text" id="f-raceName" data-k="raceName" value="${esc(d.raceName)}" placeholder="e.g. Brooklyn Half"></div>
       <div class="row2"><div class="field"><label for="f-raceDate">Race date</label><input type="date" id="f-raceDate" data-k="raceDate" data-re="1" value="${esc(d.raceDate)}"></div>
-      <div class="field"><label for="f-startDate">Start week</label><input type="date" id="f-startDate" data-k="startDate" data-re="1" value="${esc(d.startDate)}"></div></div>
-      ${iss.errs.length ? iss.errs.map(e => `<p class="err">${esc(e)}</p>`).join('') : `<div class="card"><div class="eyebrow">${s.n} weeks · starts ${fmtD(mondayOf(parseISO(d.startDate)))}</div>${stripHTML(r.weeks, -1, false)}${legendHTML()}
+      <div class="field"><label for="f-startDate">First day of training</label><input type="date" id="f-startDate" data-k="startDate" data-re="1" value="${esc(d.startDate)}"></div></div>
+      ${iss.errs.length ? iss.errs.map(e => `<p class="err">${esc(e)}</p>`).join('') : `<div class="card"><div class="eyebrow">${s.n} weeks · ${DOWL[dowOf(parseISO(d.startDate))]} ${fmtD(parseISO(d.startDate))} to race day</div>${stripHTML(r.weeks, -1, false)}${legendHTML()}
         <p>Usually recommended for a first ${DIST[d.distance].label.toLowerCase()}: about ${s.rec} weeks from where you are now (you'll tell me on step 3). ${s.n >= s.rec ? 'You have enough time.' : 'Your timeline is on the short side.'}</p></div>`}
-      <p class="muted small">Plans start on a Monday. Every 3rd week (every 4th if you already run 3+ times a week) is a lighter cutback week, and the last ${s.taper} weeks are a taper.</p>`;
+      <p class="muted small">Week 1 starts on the day you pick, and each week runs 7 days from there. Every 3rd week (every 4th if you already run 3+ times a week) is a lighter cutback week, and the last ${s.taper} weeks are a taper.</p>`;
   } else if (st === 1) {
     const D = DIST[d.distance], g = parseTime(d.goalTime);
     body = `<div class="field"><span class="lab">Which race?</span>${seg('distance', [['half', 'Half marathon · 21.1 km'], ['full', 'Marathon · 42.2 km']], d.distance)}</div>
